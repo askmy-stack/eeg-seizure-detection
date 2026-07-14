@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eeg-seizure-detection"
+version = "0.1.0"
+description = "EEG seizure detection: data pipeline, LSTM/Mamba-MoE models, and evaluation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "numpy>=1.26,<2.0",
+  "pandas>=2.0,<3.0",
+  "torch>=2.1,<3.0",
+  "scikit-learn>=1.3,<2.0",
+  "pyyaml>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9.0",
+  "ruff>=0.4,<1.0",
+]
+# Extras needed to run the full data pipeline (download/preprocess/train),
+# on top of the base `dependencies`. Not required for `pytest src/tests/`.
+pipeline = [
+  "mne>=1.6,<2.0",
+  "matplotlib>=3.8,<4.0",
+  "pytorch-tabnet>=4.1,<5.0",
+  "xgboost>=2.0,<3.0",
+  "lightgbm>=4.0,<5.0",
+  "optuna>=3.5,<4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
