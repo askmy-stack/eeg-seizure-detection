@@ -39,6 +39,7 @@ from data_loader.core.signal import normalize_signal, preprocess
 from feature.feature_engineering import AdvancedFeatureExtractor
 from models.improved_lstm_models.architectures import HierarchicalLSTM
 from model_adapters.cnn_lstm import CheckpointCNNLSTM
+from security import load_trusted_checkpoint, validate_edf_upload
 
 
 SOFT_SCORE_CMAP = LinearSegmentedColormap.from_list(
@@ -61,13 +62,6 @@ def sync_window_from_number(number_key: str, slider_key: str, value_key: str) ->
     value = float(st.session_state[number_key])
     st.session_state[value_key] = value
     st.session_state[slider_key] = value
-
-
-def load_trusted_checkpoint(checkpoint_path: Path) -> dict[str, object]:
-    # These checkpoints are local project artifacts created by this project.
-    # PyTorch 2.6 defaults to weights_only=True, which breaks older training
-    # checkpoints that include numpy scalar/config metadata.
-    return torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
 
 def get_checkpoint_state_dict(checkpoint: dict[str, object]) -> dict[str, torch.Tensor]:
@@ -644,9 +638,7 @@ def process_edf_upload(
     normalize: bool = True,
 ) -> tuple[np.ndarray, dict[str, str], dict[str, object]]:
     started_at = time.perf_counter()
-    suffix = Path(file_name).suffix.lower()
-    if suffix != ".edf":
-        raise ValueError("EDF processing was requested for a non-EDF upload.")
+    validate_edf_upload(file_bytes, file_name)
 
     log_event(f"process_edf_upload start file={file_name} window_start={window_start_sec:.2f}s")
     with tempfile.NamedTemporaryFile(suffix=".edf", delete=False) as tmp:
@@ -811,9 +803,7 @@ def process_edf_path(
 @st.cache_data(show_spinner=False)
 def get_edf_duration(file_bytes: bytes, file_name: str) -> float:
     started_at = time.perf_counter()
-    suffix = Path(file_name).suffix.lower()
-    if suffix != ".edf":
-        raise ValueError("Only EDF files are supported.")
+    validate_edf_upload(file_bytes, file_name)
     log_event(f"get_edf_duration start file={file_name}")
     with tempfile.NamedTemporaryFile(suffix=".edf", delete=False) as tmp:
         tmp.write(file_bytes)
@@ -1085,6 +1075,11 @@ def render_case_selector(section_key: str, case_title: str, window_sec: float) -
             active_name = uploaded.name
             active_source_label = "local_upload"
             file_bytes = uploaded.getvalue()
+            validate_edf_upload(
+                file_bytes,
+                active_name,
+                content_type=getattr(uploaded, "type", None),
+            )
             file_key = f"upload:{uploaded.name}:{len(file_bytes)}"
             raw_duration = get_edf_duration(file_bytes, uploaded.name)
         else:
