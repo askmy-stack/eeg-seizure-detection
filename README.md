@@ -669,6 +669,14 @@ outputs:
 
 ---
 
+
+## 🤝 Community & Security
+
+- [Code of Conduct](CODE_OF_CONDUCT.md) — expectations for contributors
+- [Security Policy](SECURITY.md) — how to report vulnerabilities privately
+
+---
+
 ## 📄 Research Paper
 
 A comparative study draft is available at [`research_paper/Markdown/MODELING_PIPELINE_RESEARCH_DRAFT.md`](research_paper/Markdown/MODELING_PIPELINE_RESEARCH_DRAFT.md).
