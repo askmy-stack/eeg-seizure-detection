@@ -672,6 +672,7 @@ outputs:
 
 ## 🤝 Community & Security
 
+- [Contributing](CONTRIBUTING.md) — setup, model-family guide, PR expectations
 - [Code of Conduct](CODE_OF_CONDUCT.md) — expectations for contributors
 - [Security Policy](SECURITY.md) — how to report vulnerabilities privately
 
