@@ -8,30 +8,55 @@ Ground truth: _events.tsv next to the BIDS EDF (written during BIDS conversion)
   - If events TSV exists  -> file has seizures; windows overlapping seizure intervals = 1
   - If no events TSV      -> file has no seizures; ALL windows must be 0
 
-Run on server:
-    python3 src/data_loader/tests/test_labels.py
+Paths are resolved from environment variables (no machine-specific defaults):
+
+    EEG_RESULTS_ROOT   Root with bids_dataset/ and dataloader/ (required for CLI)
+    EEG_CSV_BASE_DIR   Directory that CSV relative paths resolve against (required for CLI)
+
+Optional overrides:
+
+    EEG_BIDS_ROOT      Override bids_dataset path
+    EEG_DATALOADER     Override dataloader (window_index_*.csv) path
+
+Run verification (after setting env):
+
+    python3 src/tests/test_labels.py
+
+Unit tests for helpers use pytest tmp_path fixtures (no real dataset required):
+
+    pytest src/tests/test_labels.py -q
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import Dict, List, Tuple
 
 import pandas as pd
-
-# ── Paths ──────────────────────────────────────────────────────────────────
-RESULTS_ROOT = Path("/home/amir/Desktop/GWU/Research/EEG/results")
-BIDS_ROOT    = RESULTS_ROOT / "bids_dataset"
-DATALOADER   = RESULTS_ROOT / "dataloader"
-# Paths stored in the CSV are relative to the data_loader working directory
-CSV_BASE_DIR = Path("/home/amir/Desktop/GWU/Research/EEG/src/data_loader")
+import pytest
 
 SPLITS = ["train", "val", "test"]
-OVERLAP_THRESHOLD = 0.5   # must match config.yaml labeling.overlap_threshold
+OVERLAP_THRESHOLD = 0.5  # must match config.yaml labeling.overlap_threshold
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+def resolve_roots() -> Tuple[Path, Path, Path]:
+    """Return (bids_root, dataloader, csv_base_dir) from environment."""
+    results = os.environ.get("EEG_RESULTS_ROOT")
+    csv_base = os.environ.get("EEG_CSV_BASE_DIR")
+    if not results or not csv_base:
+        raise EnvironmentError(
+            "Set EEG_RESULTS_ROOT and EEG_CSV_BASE_DIR to run label verification. "
+            "Example:\n"
+            "  export EEG_RESULTS_ROOT=/path/to/results\n"
+            "  export EEG_CSV_BASE_DIR=/path/to/src/data_loader"
+        )
+    results_root = Path(results)
+    bids_root = Path(os.environ["EEG_BIDS_ROOT"]) if os.environ.get("EEG_BIDS_ROOT") else results_root / "bids_dataset"
+    dataloader = Path(os.environ["EEG_DATALOADER"]) if os.environ.get("EEG_DATALOADER") else results_root / "dataloader"
+    return bids_root, dataloader, Path(csv_base)
+
 
 def load_events_tsv(events_path: Path) -> List[Tuple[float, float]]:
     """Return list of (onset, end) seizure intervals from a BIDS events TSV."""
@@ -44,7 +69,7 @@ def load_events_tsv(events_path: Path) -> List[Tuple[float, float]]:
     intervals = []
     for _, row in df.iterrows():
         onset = float(row["onset"])
-        dur   = float(row.get("duration", 0.0))
+        dur = float(row.get("duration", 0.0))
         intervals.append((onset, onset + dur))
     return intervals
 
@@ -63,84 +88,122 @@ def overlap_ratio(win_start: float, win_end: float,
     return total / dur
 
 
-def resolve_events_path(path_str: str) -> Path:
+def resolve_events_path(path_str: str, csv_base_dir: Path) -> Path:
     """
-    Given the 'path' column value (may be relative to CSV_BASE_DIR),
+    Given the 'path' column value (may be relative to csv_base_dir),
     return the absolute path of the sibling _events.tsv file.
-    Paths in the CSV look like: ../../results/bids_dataset/sub-.../eeg/...edf
-    They are relative to src/data_loader (CSV_BASE_DIR).
     """
     p = Path(path_str)
     if not p.is_absolute():
-        p = (CSV_BASE_DIR / p).resolve()
-    stem = p.stem  # e.g. sub-chb10_task-eeg_run-09_eeg
+        p = (csv_base_dir / p).resolve()
+    stem = p.stem
     return p.parent / (stem + "_events.tsv")
 
 
-# ── Label verification ─────────────────────────────────────────────────────
+# ── pytest: helpers with tmp_path (no hardcoded machine paths) ─────────────
 
-def verify_split(split: str) -> dict:
-    csv_path = DATALOADER / f"window_index_{split}.csv"
+def test_load_events_tsv_reads_intervals(tmp_path: Path):
+    events = tmp_path / "run_events.tsv"
+    events.write_text("onset\tduration\n10.0\t5.0\n30.0\t2.5\n", encoding="utf-8")
+    assert load_events_tsv(events) == [(10.0, 15.0), (30.0, 32.5)]
+
+
+def test_load_events_tsv_missing_file(tmp_path: Path):
+    assert load_events_tsv(tmp_path / "missing.tsv") == []
+
+
+def test_overlap_ratio_partial_and_none():
+    intervals = [(10.0, 20.0)]
+    assert overlap_ratio(15.0, 25.0, intervals) == pytest.approx(0.5)
+    assert overlap_ratio(0.0, 5.0, intervals) == 0.0
+
+
+def test_resolve_events_path_relative(tmp_path: Path):
+    edf_rel = Path("bids") / "sub-01_eeg.edf"
+    (tmp_path / "bids").mkdir()
+    resolved = resolve_events_path(str(edf_rel), tmp_path)
+    assert resolved == (tmp_path / "bids" / "sub-01_eeg_events.tsv").resolve()
+
+
+def test_resolve_roots_requires_env(monkeypatch):
+    monkeypatch.delenv("EEG_RESULTS_ROOT", raising=False)
+    monkeypatch.delenv("EEG_CSV_BASE_DIR", raising=False)
+    with pytest.raises(EnvironmentError, match="EEG_RESULTS_ROOT"):
+        resolve_roots()
+
+
+def test_resolve_roots_from_env(tmp_path: Path, monkeypatch):
+    results = tmp_path / "results"
+    csv_base = tmp_path / "data_loader"
+    results.mkdir()
+    csv_base.mkdir()
+    monkeypatch.setenv("EEG_RESULTS_ROOT", str(results))
+    monkeypatch.setenv("EEG_CSV_BASE_DIR", str(csv_base))
+    bids, dataloader, base = resolve_roots()
+    assert bids == results / "bids_dataset"
+    assert dataloader == results / "dataloader"
+    assert base == csv_base
+
+
+# ── Label verification (CLI / full dataset) ────────────────────────────────
+
+def verify_split(split: str, dataloader: Path, csv_base_dir: Path) -> dict:
+    csv_path = dataloader / f"window_index_{split}.csv"
     if not csv_path.exists():
         print(f"  [SKIP] {csv_path} not found")
         return {}
 
     df = pd.read_csv(csv_path)
-    total  = len(df)
-    n_pos  = int((df["label"] == 1).sum())
-    n_neg  = int((df["label"] == 0).sum())
+    total = len(df)
+    n_pos = int((df["label"] == 1).sum())
+    n_neg = int((df["label"] == 0).sum())
 
     print(f"\n{'='*65}")
     print(f"Split: {split.upper()}  |  total={total:,}  label=1: {n_pos:,}  label=0: {n_neg:,}")
     print(f"{'='*65}")
 
-    # labeled 1 but no events TSV at all (file has no seizure in summary)
-    errors_no_events   = []
-    # labeled 1 but window does not overlap any seizure
-    errors_false_pos   = []
-    # labeled 0 but window fully overlaps a seizure
-    errors_false_neg   = []
+    errors_no_events: list = []
+    errors_false_pos: list = []
+    errors_false_neg: list = []
 
-    # Cache: path_str -> list of seizure intervals (empty = no seizures)
     events_cache: Dict[str, List[Tuple[float, float]]] = {}
     exists_cache: Dict[str, bool] = {}
 
     for _, row in df.iterrows():
-        path_str  = row["path"]
+        path_str = row["path"]
         win_start = float(row["start_sec"])
-        win_end   = float(row["end_sec"])
-        label     = int(row["label"])
+        win_end = float(row["end_sec"])
+        label = int(row["label"])
 
         if path_str not in events_cache:
-            ev_path = resolve_events_path(path_str)
+            ev_path = resolve_events_path(path_str, csv_base_dir)
             exists_cache[path_str] = ev_path.exists()
             events_cache[path_str] = load_events_tsv(ev_path) if exists_cache[path_str] else []
 
         has_events = exists_cache[path_str]
-        intervals  = events_cache[path_str]
-        ratio      = overlap_ratio(win_start, win_end, intervals)
-        expected   = 1 if ratio >= OVERLAP_THRESHOLD else 0
+        intervals = events_cache[path_str]
+        ratio = overlap_ratio(win_start, win_end, intervals)
+        expected = 1 if ratio >= OVERLAP_THRESHOLD else 0
 
         if label == 1 and not has_events:
             errors_no_events.append(row.to_dict())
         elif label == 1 and expected == 0:
             errors_false_pos.append({
-                "path":             path_str,
-                "start_sec":        win_start,
-                "end_sec":          win_end,
-                "overlap_ratio":    round(ratio, 4),
+                "path": path_str,
+                "start_sec": win_start,
+                "end_sec": win_end,
+                "overlap_ratio": round(ratio, 4),
                 "seizure_intervals": intervals,
             })
         elif label == 0 and expected == 1:
             errors_false_neg.append({
-                "path":             path_str,
-                "start_sec":        win_start,
-                "end_sec":          win_end,
-                "overlap_ratio":    round(ratio, 4),
+                "path": path_str,
+                "start_sec": win_start,
+                "end_sec": win_end,
+                "overlap_ratio": round(ratio, 4),
                 "seizure_intervals": intervals,
             })
 
-    # ── Print results ──
     print(f"\n  [CHECK 1] label=1 but NO events TSV (file has no seizure):")
     if errors_no_events:
         bad = pd.DataFrame(errors_no_events)
@@ -177,25 +240,19 @@ def verify_split(split: str) -> dict:
     print(f"\n  Total errors in '{split}': {total_errors:,}")
 
     return {
-        "split":               split,
-        "total":               total,
-        "n_pos":               n_pos,
-        "n_neg":               n_neg,
-        "no_events_but_pos":   len(errors_no_events),
-        "false_positives":     len(errors_false_pos),
-        "false_negatives":     len(errors_false_neg),
+        "split": split,
+        "total": total,
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+        "no_events_but_pos": len(errors_no_events),
+        "false_positives": len(errors_false_pos),
+        "false_negatives": len(errors_false_neg),
     }
 
 
-# ── Windowing sanity check ─────────────────────────────────────────────────
-
-def windowing_sanity_check(split: str = "train"):
-    """
-    Per-run checks:
-      - All windows have the same size
-      - Windows are contiguous (no gaps, no overlaps between consecutive windows)
-    """
-    csv_path = DATALOADER / f"window_index_{split}.csv"
+def windowing_sanity_check(dataloader: Path, split: str = "train"):
+    """Per-run checks: window size consistency and contiguous coverage."""
+    csv_path = dataloader / f"window_index_{split}.csv"
     if not csv_path.exists():
         return
 
@@ -218,27 +275,27 @@ def windowing_sanity_check(split: str = "train"):
         print(f"    {sz}s  ->  {cnt:,} windows")
 
     overlap_errors = []
-    gap_errors     = []
+    gap_errors = []
 
     for path_str, grp in df_unique.groupby("path"):
         grp = grp.sort_values("start_sec").reset_index(drop=True)
         for i in range(1, len(grp)):
-            prev_end   = round(float(grp.loc[i - 1, "end_sec"]),   6)
-            curr_start = round(float(grp.loc[i,     "start_sec"]), 6)
+            prev_end = round(float(grp.loc[i - 1, "end_sec"]), 6)
+            curr_start = round(float(grp.loc[i, "start_sec"]), 6)
             diff = round(curr_start - prev_end, 6)
             if diff < -1e-4:
                 overlap_errors.append({
-                    "path":       path_str,
-                    "prev_end":   prev_end,
+                    "path": path_str,
+                    "prev_end": prev_end,
                     "curr_start": curr_start,
-                    "overlap_s":  round(-diff, 6),
+                    "overlap_s": round(-diff, 6),
                 })
             elif diff > 1e-4:
                 gap_errors.append({
-                    "path":       path_str,
-                    "prev_end":   prev_end,
+                    "path": path_str,
+                    "prev_end": prev_end,
                     "curr_start": curr_start,
-                    "gap_s":      round(diff, 6),
+                    "gap_s": round(diff, 6),
                 })
 
     print(f"\n  Overlapping windows (curr_start < prev_end): {len(overlap_errors)}")
@@ -263,20 +320,19 @@ def windowing_sanity_check(split: str = "train"):
         print(f"\n  FAIL — {real_issues} real windowing issues found")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
+    bids_root, dataloader, csv_base_dir = resolve_roots()
     print("CHB-MIT Label & Windowing Verification")
-    print(f"BIDS root : {BIDS_ROOT}")
-    print(f"CSV root  : {DATALOADER}")
+    print(f"BIDS root : {bids_root}")
+    print(f"CSV root  : {dataloader}")
 
     summaries = []
     for split in SPLITS:
-        result = verify_split(split)
+        result = verify_split(split, dataloader, csv_base_dir)
         if result:
             summaries.append(result)
 
-    windowing_sanity_check("train")
+    windowing_sanity_check(dataloader, "train")
 
     print(f"\n{'='*65}")
     print("OVERALL SUMMARY")
